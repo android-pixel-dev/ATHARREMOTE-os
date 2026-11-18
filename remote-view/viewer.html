@@ -1,0 +1,196 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="referrer" content="no-referrer">
+
+  <title>ATHAR REMOTE VIEW</title>
+
+  <link rel="stylesheet" href="/remote.css">
+</head>
+
+<body>
+
+  <main class="app">
+
+    <header class="header">
+      <div>
+        <h1>ATHAR <span>REMOTE</span></h1>
+        <p>SECURE DEVICE VIEWER</p>
+      </div>
+
+      <div class="indicator" id="indicator">
+        OFFLINE
+      </div>
+    </header>
+
+    <section class="connection-card">
+
+      <h2>Device Connection</h2>
+
+      <label for="token">Viewer access token</label>
+
+      <input
+        id="token"
+        type="password"
+        placeholder="Enter your viewer token"
+        autocomplete="off"
+      >
+
+      <div class="buttons">
+        <button id="connectBtn">CONNECT</button>
+        <button id="disconnectBtn" class="secondary">
+          DISCONNECT
+        </button>
+      </div>
+
+      <p id="status">Not connected</p>
+
+    </section>
+
+    <section class="screen-card">
+
+      <div class="screen-heading">
+        <h2>LIVE SCREEN</h2>
+        <span id="deviceStatus">DEVICE OFFLINE</span>
+      </div>
+
+      <div class="screen">
+
+        <img
+          id="screenImage"
+          alt="Approved device screen stream"
+          hidden
+        >
+
+        <div id="placeholder">
+          <div class="screen-icon">▣</div>
+          <h3>No live stream</h3>
+          <p>Connect an approved companion device to view its screen.</p>
+        </div>
+
+      </div>
+
+    </section>
+
+    <footer>
+      <p>ATHAR REMOTE OS · PRIVATE SESSION</p>
+      <p>Screen sharing requires device-owner approval.</p>
+    </footer>
+
+  </main>
+
+  <script>
+    const tokenInput = document.getElementById("token");
+    const connectBtn = document.getElementById("connectBtn");
+    const disconnectBtn = document.getElementById("disconnectBtn");
+    const statusText = document.getElementById("status");
+    const indicator = document.getElementById("indicator");
+    const deviceStatus = document.getElementById("deviceStatus");
+    const screenImage = document.getElementById("screenImage");
+    const placeholder = document.getElementById("placeholder");
+
+    let socket = null;
+    let authenticated = false;
+
+    function setStatus(text, online = false) {
+      statusText.textContent = text;
+      indicator.textContent = online ? "CONNECTED" : "OFFLINE";
+      indicator.classList.toggle("online", online);
+    }
+
+    function disconnect() {
+      authenticated = false;
+
+      if (socket) {
+        socket.close();
+        socket = null;
+      }
+
+      screenImage.hidden = true;
+      screenImage.removeAttribute("src");
+      placeholder.hidden = false;
+
+      deviceStatus.textContent = "DEVICE OFFLINE";
+      setStatus("Disconnected");
+    }
+
+    connectBtn.addEventListener("click", () => {
+      const token = tokenInput.value.trim();
+
+      if (!token) {
+        setStatus("Enter viewer token first");
+        return;
+      }
+
+      disconnect();
+
+      const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+      socket = new WebSocket(`${protocol}//${location.host}/ws`);
+
+      setStatus("Connecting...");
+
+      socket.addEventListener("open", () => {
+        socket.send(JSON.stringify({
+          type: "auth",
+          role: "viewer",
+          token
+        }));
+      });
+
+      socket.addEventListener("message", event => {
+        let message;
+
+        try {
+          message = JSON.parse(event.data);
+        } catch {
+          return;
+        }
+
+        if (message.type === "authenticated") {
+          authenticated = true;
+          setStatus("Viewer authenticated", true);
+        }
+
+        if (message.type === "status") {
+          deviceStatus.textContent = message.deviceConnected
+            ? "DEVICE CONNECTED"
+            : "DEVICE OFFLINE";
+        }
+
+        if (message.type === "frame" &&
+            authenticated &&
+            message.mime === "image/jpeg") {
+
+          screenImage.src =
+            `data:image/jpeg;base64,${message.data}`;
+
+          screenImage.hidden = false;
+          placeholder.hidden = true;
+        }
+
+        if (message.type === "error") {
+          setStatus(message.message);
+        }
+      });
+
+      socket.addEventListener("close", () => {
+        authenticated = false;
+        setStatus("Connection closed");
+        deviceStatus.textContent = "DEVICE OFFLINE";
+      });
+
+      socket.addEventListener("error", () => {
+        setStatus("Connection error");
+      });
+    });
+
+    disconnectBtn.addEventListener("click", disconnect);
+
+    window.addEventListener("beforeunload", disconnect);
+  </script>
+
+</body>
+</html>
