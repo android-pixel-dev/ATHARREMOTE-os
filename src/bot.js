@@ -188,16 +188,65 @@ async function findRun(since) {
 
 async function waitForRun(r, progress) {
   const until = Date.now() + 15 * 60 * 1000;
-  let last = 0;
+
   while (Date.now() < until) {
     const current = await gh(repo + '/actions/runs/' + r.id);
-    if (current.status === 'completed') return current;
-    if (Date.now() - last > 20000) {
-      await progress('GitHub Actions: ' + (current.status || 'running'));
-      last = Date.now();
+
+    const data = await gh(
+      repo + '/actions/runs/' + r.id + '/jobs?per_page=20'
+    ).catch(() => ({ jobs: [] }));
+
+    const steps = (data.jobs || []).flatMap(job =>
+      (job.steps || []).map(step => ({
+        name: step.name,
+        status: step.status,
+        conclusion: step.conclusion
+      }))
+    );
+
+    const total = steps.length;
+    const completed = steps.filter(x => x.status === 'completed').length;
+    const active = steps.find(x => x.status === 'in_progress');
+
+    const percent = total
+      ? Math.min(99, Math.floor((completed / total) * 100))
+      : 0;
+
+    const phase = active
+      ? active.name
+      : total && completed
+        ? 'Completed ' + completed + ' of ' + total + ' steps'
+        : current.status === 'queued'
+          ? 'Waiting for GitHub runner'
+          : 'Preparing build steps';
+
+    if (current.status === 'completed') {
+      await progress({
+        kind: 'live',
+        percent: current.conclusion === 'success' ? 100 : percent,
+        completed,
+        total,
+        phase: current.conclusion === 'success'
+          ? 'APK compilation complete'
+          : 'Build ' + current.conclusion,
+        url: r.html_url
+      });
+
+      return current;
     }
-    await sleep(5000);
+
+    await progress({
+      kind: 'live',
+      percent,
+      completed,
+      total,
+      phase,
+      url: r.html_url
+    });
+
+    await sleep(8000);
   }
+
   throw new Error('Build timed out after 15 minutes. Check GitHub Actions.');
 }
 
@@ -275,13 +324,63 @@ async function build(chatId) {
   activeBuild = { started: Date.now(), stage: 'Preparing', url: null };
 
   (async () => {
-    const progress = async stage => {
-      if (activeBuild) activeBuild.stage = stage;
-      await edit(chatId, msg.message_id,
-        '⚙️ ATHAR APK BUILDER\n\nStatus: RUNNING\nStage: ' + stage +
-        '\nElapsed: ' + elapsed(Date.now() - activeBuild.started) +
-        '\n\nKeep the bot running. APK will be delivered here automatically.');
+    let lastProgressEdit = 0;
+
+    const progress = async update => {
+      if (!activeBuild) return;
+
+      const runtime = elapsed(Date.now() - activeBuild.started);
+      let body = '';
+
+      if (typeof update === 'string') {
+        activeBuild.stage = update;
+
+        body = [
+          '⚡ ATHAR REMOTE OS',
+          'BUILD CONTROL CENTER',
+          '━━━━━━━━━━━━━━━━━━',
+          '',
+          '🟠 BUILD PIPELINE ACTIVE',
+          '',
+          'Stage: ' + update,
+          'Runtime: ' + runtime,
+          '',
+          'GitHub Actions: connected',
+          'APK delivery: pending',
+          '',
+          'Live workflow tracking is active.'
+        ].join('\n');
+      } else {
+        const percent = Math.max(0, Math.min(100, update.percent || 0));
+        const filled = Math.round(percent / 10);
+        const bar = '▰'.repeat(filled) + '▱'.repeat(10 - filled);
+
+        activeBuild.stage = update.phase || 'Building';
+
+        body = [
+          '⚡ ATHAR REMOTE OS',
+          'BUILD CONTROL CENTER',
+          '━━━━━━━━━━━━━━━━━━',
+          '',
+          bar + '  ' + percent + '%',
+          '',
+          'Completed steps: ' + update.completed + '/' + update.total,
+          'Current stage: ' + activeBuild.stage,
+          'Runtime: ' + runtime,
+          '',
+          '🟢 GitHub Actions connected',
+          '📦 APK delivery: ' + (percent === 100 ? 'Preparing' : 'Waiting'),
+          '',
+          update.url || ''
+        ].join('\n');
+      }
+
+      if (Date.now() - lastProgressEdit < 2500) return;
+      lastProgressEdit = Date.now();
+
+      await edit(chatId, msg.message_id, body);
     };
+
     try {
       const requestTime = Date.now();
       await progress('Dispatching GitHub Actions');
